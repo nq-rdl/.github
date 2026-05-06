@@ -1,0 +1,65 @@
+name: Notify Slack on review request
+
+# Reusable workflow called by every nq-rdl non-fork repo on the
+# pull_request: review_requested event. Posts a message to the team
+# Slack channel via incoming webhook so the lead doesn't miss the ping
+# even if they're away from GitHub notifications.
+
+on:
+  workflow_call: {}
+
+jobs:
+  notify:
+    # Fires for both individual-user and team review requests
+    if: github.event.requested_reviewer != null || github.event.requested_team != null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build payload and post to Slack
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          REVIEWER_USER: ${{ github.event.requested_reviewer.login }}
+          REVIEWER_TEAM: ${{ github.event.requested_team.slug }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_REVIEW_WEBHOOK }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$SLACK_WEBHOOK" ]]; then
+            echo "::error::SLACK_REVIEW_WEBHOOK secret is not set on this repo"
+            exit 1
+          fi
+
+          # Pick whichever reviewer field is populated
+          if [[ -n "$REVIEWER_USER" ]]; then
+            reviewer="@$REVIEWER_USER"
+          else
+            reviewer="@nq-rdl/$REVIEWER_TEAM (team)"
+          fi
+
+          # jq --arg JSON-encodes user-controlled values safely
+          payload=$(jq -nc \
+            --arg title    "$PR_TITLE" \
+            --arg url      "$PR_URL" \
+            --arg num      "$PR_NUMBER" \
+            --arg repo     "$REPO" \
+            --arg author   "$AUTHOR" \
+            --arg reviewer "$reviewer" \
+            '{
+              text: ("Review requested in " + $repo + ": " + $title),
+              blocks: [{
+                type: "section",
+                text: {
+                  type: "mrkdwn",
+                  text: ("*Review requested* in `" + $repo + "`\n"
+                       + "<" + $url + "|#" + $num + " — " + $title + ">\n"
+                       + "*Reviewer:* `" + $reviewer + "`\n"
+                       + "*Author:* `@" + $author + "`")
+                }
+              }]
+            }')
+
+          curl -fsSL -X POST -H 'Content-Type: application/json' \
+            --data "$payload" "$SLACK_WEBHOOK"
