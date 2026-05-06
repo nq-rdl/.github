@@ -1,0 +1,131 @@
+name: Auto-triage to project
+
+# Reusable workflow called by every nq-rdl non-fork repo.
+# Adds the issue/PR to org Project #1, sets Status=Todo and Domain=<input>,
+# and assigns/requests review from the domain lead.
+
+on:
+  workflow_call:
+    inputs:
+      domain:
+        required: true
+        type: string
+        description: One of Infrastructure | RSE | Governance | DataOps | Administrative
+      lead:
+        required: true
+        type: string
+        description: GitHub username of the domain lead
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint App installation token
+        id: app-token
+        # actions/create-github-app-token v3.1.1
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3
+        with:
+          app-id: ${{ vars.PROJECT_BOT_APP_ID }}
+          private-key: ${{ secrets.PROJECT_BOT_PRIVATE_KEY }}
+          owner: nq-rdl
+
+      - name: Add issue or PR to org project #1
+        id: add
+        # actions/add-to-project v2.0.0
+        uses: actions/add-to-project@5afcf98fcd03f1c2f92c3c83f58ae24323cc57fd
+        with:
+          project-url: https://github.com/orgs/nq-rdl/projects/1
+          github-token: ${{ steps.app-token.outputs.token }}
+
+      - name: Set Status=Todo and Domain on the project item
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ITEM_ID: ${{ steps.add.outputs.itemId }}
+          DOMAIN_VALUE: ${{ inputs.domain }}
+        run: |
+          set -euo pipefail
+
+          DATA=$(gh api graphql -f query='
+            query($org: String!, $num: Int!) {
+              organization(login: $org) {
+                projectV2(number: $num) {
+                  id
+                  fields(first: 50) {
+                    nodes {
+                      ... on ProjectV2SingleSelectField {
+                        id name options { id name }
+                      }
+                    }
+                  }
+                }
+              }
+            }' -F org=nq-rdl -F num=1)
+
+          PROJECT_ID=$(jq -r '.data.organization.projectV2.id' <<<"$DATA")
+          STATUS_FIELD=$(jq -r '.data.organization.projectV2.fields.nodes[]
+            | select(.name=="Status") | .id' <<<"$DATA")
+          STATUS_TODO=$(jq -r '.data.organization.projectV2.fields.nodes[]
+            | select(.name=="Status") | .options[]
+            | select(.name=="Todo") | .id' <<<"$DATA")
+          DOMAIN_FIELD=$(jq -r '.data.organization.projectV2.fields.nodes[]
+            | select(.name=="Domain") | .id' <<<"$DATA")
+          DOMAIN_OPT=$(jq -r --arg D "$DOMAIN_VALUE" '.data.organization.projectV2.fields.nodes[]
+            | select(.name=="Domain") | .options[]
+            | select(.name==$D) | .id' <<<"$DATA")
+
+          [[ -z "$PROJECT_ID"   || "$PROJECT_ID"   == "null" ]] && { echo "::error::Project not found"; exit 1; }
+          [[ -z "$STATUS_TODO"  || "$STATUS_TODO"  == "null" ]] && { echo "::error::Status option 'Todo' not found"; exit 1; }
+          [[ -z "$DOMAIN_OPT"   || "$DOMAIN_OPT"   == "null" ]] && { echo "::error::Domain option '$DOMAIN_VALUE' not found"; exit 1; }
+
+          set_field() {
+            gh api graphql -f query='
+              mutation($p:ID!, $i:ID!, $f:ID!, $v:String!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId:$p, itemId:$i, fieldId:$f,
+                  value:{singleSelectOptionId:$v}
+                }) { projectV2Item { id } }
+              }' -F p="$PROJECT_ID" -F i="$ITEM_ID" -F f="$1" -F v="$2" >/dev/null
+          }
+
+          set_field "$STATUS_FIELD" "$STATUS_TODO"
+          set_field "$DOMAIN_FIELD" "$DOMAIN_OPT"
+          echo "Set Status=Todo, Domain=$DOMAIN_VALUE on item $ITEM_ID"
+
+      - name: Assign issue to domain lead
+        if: github.event_name == 'issues'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          LEAD: ${{ inputs.lead }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" --add-assignee "$LEAD" --repo "$REPO"
+
+      - name: Assign PR to domain lead (skip routine bot PRs)
+        if: >-
+          github.event_name == 'pull_request'
+          && github.event.pull_request.user.login != inputs.lead
+          && (github.event.pull_request.user.type != 'Bot'
+              || contains(github.event.pull_request.labels.*.name, 'security'))
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          LEAD: ${{ inputs.lead }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-assignee "$LEAD" --repo "$REPO" || true
+
+      - name: Request review from domain lead (non-draft only)
+        if: >-
+          github.event_name == 'pull_request'
+          && !github.event.pull_request.draft
+          && github.event.pull_request.user.login != inputs.lead
+          && (github.event.pull_request.user.type != 'Bot'
+              || contains(github.event.pull_request.labels.*.name, 'security'))
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          LEAD: ${{ inputs.lead }}
+        run: |
+          gh pr edit "$PR_NUMBER" --add-reviewer "$LEAD" --repo "$REPO" || true
