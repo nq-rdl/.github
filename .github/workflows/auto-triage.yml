@@ -101,19 +101,27 @@ jobs:
         run: |
           gh issue edit "$ISSUE_NUMBER" --add-assignee "$LEAD" --repo "$REPO"
 
-      - name: Assign PR to domain lead (skip routine bot PRs)
+      - name: Assign PR to author (or to lead for security bot PRs)
         if: >-
           github.event_name == 'pull_request'
-          && github.event.pull_request.user.login != inputs.lead
           && (github.event.pull_request.user.type != 'Bot'
               || contains(github.event.pull_request.labels.*.name, 'security'))
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
           LEAD: ${{ inputs.lead }}
+          IS_BOT: ${{ github.event.pull_request.user.type == 'Bot' }}
         run: |
-          gh pr edit "$PR_NUMBER" --add-assignee "$LEAD" --repo "$REPO" || true
+          # Human author drives their own PR. For security bot PRs (no
+          # human author) the lead owns the triage.
+          if [[ "$IS_BOT" == "true" ]]; then
+            assignee="$LEAD"
+          else
+            assignee="$AUTHOR"
+          fi
+          gh pr edit "$PR_NUMBER" --add-assignee "$assignee" --repo "$REPO" || true
 
       - name: Request review from domain lead (non-draft only)
         if: >-
