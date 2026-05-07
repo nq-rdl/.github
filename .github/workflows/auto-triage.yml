@@ -122,18 +122,3 @@ jobs:
             assignee="$AUTHOR"
           fi
           gh pr edit "$PR_NUMBER" --add-assignee "$assignee" --repo "$REPO" || true
-
-      - name: Request review from domain lead (non-draft only)
-        if: >-
-          github.event_name == 'pull_request'
-          && !github.event.pull_request.draft
-          && github.event.pull_request.user.login != inputs.lead
-          && (github.event.pull_request.user.type != 'Bot'
-              || contains(github.event.pull_request.labels.*.name, 'security'))
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-          LEAD: ${{ inputs.lead }}
-        run: |
-          gh pr edit "$PR_NUMBER" --add-reviewer "$LEAD" --repo "$REPO" || true
