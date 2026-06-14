@@ -11,5 +11,4 @@ jobs:
     uses: nq-rdl/.github/.github/workflows/auto-triage.yml@main
     with:
       domain: Administrative
-      lead: rudolfjs
     secrets: inherit
