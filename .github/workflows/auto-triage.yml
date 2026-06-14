@@ -12,9 +12,10 @@ on:
         type: string
         description: One of Infrastructure | RSE | Governance | DataOps | Administrative
       lead:
-        required: true
+        required: false
         type: string
-        description: GitHub username of the domain lead
+        default: ''
+        description: GitHub username of the domain lead (leave empty to skip assignment)
 
 jobs:
   triage:
@@ -92,7 +93,7 @@ jobs:
           echo "Set Status=Todo, Domain=$DOMAIN_VALUE on item $ITEM_ID"
 
       - name: Assign issue to domain lead
-        if: github.event_name == 'issues'
+        if: github.event_name == 'issues' && inputs.lead != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -115,10 +116,15 @@ jobs:
           IS_BOT: ${{ github.event.pull_request.user.type == 'Bot' }}
         run: |
           # Human author drives their own PR. For security bot PRs (no
-          # human author) the lead owns the triage.
+          # human author) the lead owns the triage -- but only if a lead
+          # is configured; an empty lead means no assignment.
           if [[ "$IS_BOT" == "true" ]]; then
             assignee="$LEAD"
           else
             assignee="$AUTHOR"
           fi
-          gh pr edit "$PR_NUMBER" --add-assignee "$assignee" --repo "$REPO" || true
+          if [[ -n "$assignee" ]]; then
+            gh pr edit "$PR_NUMBER" --add-assignee "$assignee" --repo "$REPO" || true
+          else
+            echo "No lead configured; skipping bot-PR assignment."
+          fi
