@@ -2,7 +2,8 @@ name: Auto-triage to project
 
 # Reusable workflow called by every nq-rdl non-fork repo.
 # Adds the issue/PR to org Project #1, sets Status=Todo and Domain=<input>,
-# and assigns/requests review from the domain lead.
+# assigns every human-authored PR to its author, and (only when 'lead' is
+# set) assigns issues and security bot PRs to the domain lead.
 
 on:
   workflow_call:
@@ -103,8 +104,10 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --add-assignee "$LEAD" --repo "$REPO"
 
       - name: Assign PR to author (or to lead for security bot PRs)
+        # Callers trigger on either pull_request or pull_request_target (e.g.
+        # container-images), so match both rather than the event name alone.
         if: >-
-          github.event_name == 'pull_request'
+          (github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
           && (github.event.pull_request.user.type != 'Bot'
               || contains(github.event.pull_request.labels.*.name, 'security'))
         env:
@@ -124,7 +127,9 @@ jobs:
             assignee="$AUTHOR"
           fi
           if [[ -n "$assignee" ]]; then
-            gh pr edit "$PR_NUMBER" --add-assignee "$assignee" --repo "$REPO" || true
+            # Don't fail triage over assignment, but don't hide it either.
+            gh pr edit "$PR_NUMBER" --add-assignee "$assignee" --repo "$REPO" \
+              || echo "::warning::Could not assign PR #$PR_NUMBER to $assignee"
           else
             echo "No lead configured; skipping bot-PR assignment."
           fi
